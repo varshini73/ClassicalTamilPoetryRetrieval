@@ -1,15 +1,23 @@
 # Dataset statistics
 
-Calculated from the CSV on 2026-09-10.
+Calculated from data/corpus/poetry_schema.csv after the conservative full-corpus
+audit.
 
 | Measure | Count |
 |---|---:|
-| Total poems / Natrinai / Akam | 397 / 397 / 397 |
-| Puram | 0 |
-| Kurinji / Mullai / Marutham / Neithal / Palai | 129 / 31 / 32 / 102 / 103 |
-| Uri values / emotion values | 0 / 0 |
-| Validated / reviewed / needs review | 0 / 0 / 397 |
-| Missing Uri, emotion, situation, characters, keywords, translation | 397 each |
-| Project Madurai PM296 | 397 |
+| Total usable poems / Natrinai / Akam | 399 / 399 / 399 |
+| Missing poem number | 234 |
+| Source-incomplete poem | 385 |
+| Kurinji / Mullai / Marutham / Neithal / Palai | 129 / 31 / 32 / 102 / 105 |
+| Uri: pirital | 53 |
+| Uri: punartal | 3 |
+| Uri: utal | 3 |
+| Uri: iruttal / irankal | 0 / 0 |
+| Uri unresolved | 340 |
+| Draft / reviewed / needs review / validated | 59 / 0 / 340 / 0 |
+| Emotion / situation / characters / keywords / translation populated | 0 / 0 / 0 / 0 / 0 |
+| Source: Project Madurai PM296 | 399 |
 
-These are acquisition statistics, not claims of completed literary annotation.
+Uri values are deliberately limited to situations explicitly named in the
+PM296 colophons. Blank modern annotation fields are unresolved, not negative
+claims about the poems.

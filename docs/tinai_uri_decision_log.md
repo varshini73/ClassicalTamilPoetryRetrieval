@@ -13,3 +13,14 @@
   commentators differ.
 - How to cite line-level evidence consistently in the current CSV notes field.
 - Whether a later pilot should distinguish the cause of an Uri from Uri itself.
+
+## Full-corpus audit decision
+
+The complete Natrinai audit uses only explicit Uri-related wording in the
+PM296 poem-level colophon for a draft label: direct separation wording supports
+pirital, explicit union wording supports punartal, and explicit quarrel wording
+supports utal. Other wording, including travel, return, waiting, lament-like
+language, and an other-woman reference, remains unresolved without poem-level
+commentary because it cannot safely distinguish the controlled Uri categories.
+This deliberately leaves many rows needs_review and does not assign modern
+emotion, situation, character, or keyword fields.

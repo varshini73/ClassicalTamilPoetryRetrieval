@@ -7,6 +7,7 @@ COLUMNS = ["poem_id","work","poem_number","poem_text","akam_puram","tinai","uri"
 WORKS = {"Natrinai"}
 AKAM_PURAM = {"Akam","Puram"}
 TINAI = {"Kurinji","Mullai","Marutham","Neithal","Palai"}
+URI = {"punartal","pirital","iruttal","irankal","utal"}
 STATUSES = {"draft","reviewed","validated","needs_review"}
 
 def main():
@@ -30,6 +31,7 @@ def main():
         if value("work") and value("work") not in WORKS: errors.append(f"Row {n}: invalid work '{value('work')}'.")
         if value("akam_puram") and value("akam_puram") not in AKAM_PURAM: errors.append(f"Row {n}: invalid akam_puram.")
         if value("tinai") and value("tinai") not in TINAI: errors.append(f"Row {n}: invalid tinai.")
+        if value("uri") and value("uri") not in URI: errors.append(f"Row {n}: invalid uri '{value('uri')}'.")
         if value("annotation_status") and value("annotation_status") not in STATUSES: errors.append(f"Row {n}: invalid annotation_status.")
         if value("poem_id") in ids: errors.append(f"Row {n}: duplicate poem_id {value('poem_id')} (row {ids[value('poem_id')]}).")
         ids[value("poem_id")] = n

@@ -159,3 +159,12 @@ and utal, but a label is permitted only when evidence supports that poem-level
 reading. Conflicting sources, incomplete text, or insufficient evidence require
 needs_review. The existing draft -> reviewed -> validated human workflow
 remains mandatory; no source heading or automated extraction may validate a row.
+
+## Corpus-wide colophon limitation
+
+For Natrinai, Project Madurai PM296 colophons may directly name a separation,
+union, or quarrel situation and can support a draft Uri label when the wording
+is unambiguous. They are not a substitute for a commentary or translation. Do
+not infer emotion, situation, characters, or keywords at scale from a Tinai
+heading or from indirect colophon wording; leave those fields blank and use
+needs_review until a poem-level scholarly review is available.
