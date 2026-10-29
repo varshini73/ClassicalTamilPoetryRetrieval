@@ -1,0 +1,9 @@
+{
+  "name": "classical-tamil-poetry-retrieval-ui",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {"dev": "vite", "build": "tsc --noEmit && vite build", "preview": "vite preview"},
+  "dependencies": {"@vitejs/plugin-react": "latest", "lucide-react": "latest", "react": "latest", "react-dom": "latest", "vite": "latest", "typescript": "latest", "tailwindcss": "latest", "@tailwindcss/vite": "latest"},
+  "devDependencies": {"@types/react": "latest", "@types/react-dom": "latest"}
+}

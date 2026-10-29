@@ -1,5 +1,55 @@
 # Culturally Grounded Retrieval of Classical Tamil Poetry from Modern Emotional Situations
 
+## Run the working pilot
+
+```powershell
+python -m pip install -r requirements.txt
+streamlit run app.py
+```
+
+## React + FastAPI application
+
+The Streamlit pilot remains available as a fallback. The primary interface is
+the React application, backed by FastAPI and the same Python retrieval module.
+
+In one PowerShell terminal:
+
+```powershell
+cd C:\Users\VARSHINI\Desktop\ClassicalTamilPoetryRetrieval
+python -m pip install -r requirements.txt
+python -m uvicorn api:app --reload --port 8000
+```
+
+In a second PowerShell terminal:
+
+```powershell
+cd C:\Users\VARSHINI\Desktop\ClassicalTamilPoetryRetrieval\frontend
+npm.cmd install
+npm.cmd run dev -- --port 5173
+```
+
+Open `http://localhost:5173`. The API runs at `http://localhost:8000` and
+exposes health, dataset-statistics, retrieval, and evaluation-query endpoints.
+
+### Emotion model
+
+The first backend stage uses `j-hartmann/emotion-english-distilroberta-base`
+when available. Transformers caches its downloaded weights outside the
+repository and runs inference on CPU. If packages, weights, or network access
+are unavailable, the API explicitly returns the labelled rule-based fallback
+and its reason rather than claiming a pretrained prediction.
+
+The Streamlit application retrieves existing Natrinai records and preserves
+their Tamil text and source links. It implements keyword matching, an offline
+TF-IDF cosine-similarity fallback (not a pretrained sentence-embedding model),
+emotion-aware reranking, and culturally grounded routing with optional
+**user-supplied** Tinai/Uri constraints. Uri is never inferred from Tinai;
+unresolved Uri rows remain eligible as a documented fallback.
+
+`data/evaluation/modern_query_pilot.csv` contains six real-corpus candidate
+sets for human relevance review. They are unreviewed, so the app does not
+report definitive P@K, R@K, or MRR until explicit relevance judgments exist.
+
 ## Purpose
 
 This research project will explore whether the traditional Akam/Puram–Tinai–Uri

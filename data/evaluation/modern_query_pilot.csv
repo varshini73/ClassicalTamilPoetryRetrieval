@@ -1,0 +1,7 @@
+query_id,modern_situation,candidate_poem_ids,review_status,notes
+Q01,"I love someone, but we are separated and I wait for them to come back.",NT001|NT018|NT028,unreviewed,"Candidates from existing draft separation annotations; require human relevance review."
+Q02,"I am waiting for my loved one after a journey.",NT021|NT042,unreviewed,"Existing draft rows mention return after a journey; no gold judgment claimed."
+Q03,"We meet secretly at night.",NT044|NT049,unreviewed,"Existing draft rows mention meeting or night meeting; no gold judgment claimed."
+Q04,"My relationship is tense after betrayal and conflict.",NT020|NT030|NT040,unreviewed,"Existing draft rows mention estrangement; no gold judgment claimed."
+Q05,"I long for someone and feel uncertain about separation.",NT003|NT037,unreviewed,"Existing draft rows mention longing/separation; no gold judgment claimed."
+Q06,"A journey may take my loved one away from me.",NT005|NT016|NT026,unreviewed,"Existing draft rows mention departure; no gold judgment claimed."
