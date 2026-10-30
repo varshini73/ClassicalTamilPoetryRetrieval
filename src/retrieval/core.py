@@ -2,22 +2,28 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import re
+from statistics import median
 from pathlib import Path
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from .emotion_model import detect_pretrained_emotions
+from .semantic_model import MODEL_NAME as SEMANTIC_MODEL_NAME, SemanticModelUnavailable, corpus_embeddings, encode
 
 ROOT = Path(__file__).resolve().parents[2]
-CORPUS_PATH = ROOT / "data" / "corpus" / "poetry_schema.csv"
+NATRINAI_CORPUS_PATH = ROOT / "data" / "corpus" / "poetry_schema.csv"
+CORPUS_PATH = ROOT / "data" / "corpus" / "combined_poetry_schema.csv"
+MEANINGS_PATH = ROOT / "data" / "corpus" / "meanings_en.csv"
 TINAI = ("Kurinji", "Mullai", "Marutham", "Neithal", "Palai")
 URI = ("punartal", "pirital", "iruttal", "irankal", "utal")
-FIELDS = ("poem_text", "emotion", "situation", "characters", "keywords", "tinai", "uri")
+FIELDS = ("poem_text", "chapter_gloss_en", "emotion", "situation", "characters", "keywords", "tinai", "uri")
 STOPWORDS = {"a", "an", "and", "are", "but", "for", "i", "in", "is", "it", "my", "of", "on", "one", "or", "someone", "the", "them", "to", "we", "with", "you"}
 EXPAND = {"separated":{"separation","departure","journey"}, "separation":{"departure","journey"}, "waiting":{"wait","return","longing"}, "return":{"waiting","journey"}, "love":{"lover","lovers","union"}, "conflict":{"quarrel","estrangement","anger"}, "secret":{"night","meeting","rendezvous"}, "longing":{"separation","distress","desire"}}
 # These terms are meaningful to a reader but too general to rank a poem alone.
 GENERIC_TERMS = {"love", "loved", "lover", "lovers", "union", "relationship", "friend", "hero", "heroine", "companions"}
+SEMANTIC_WEAK_SPREAD = float(os.getenv("CLASSICAL_TAMIL_SEMANTIC_WEAK_SPREAD", "0.03"))
 
 # Transparent English cue inventory for the prototype.  Phrase cues have more
 # weight than isolated tokens; "love" on its own is intentionally absent.
@@ -35,7 +41,27 @@ EMOTION_CUES = {
     "uncertainty": (("not sure", "uncertain", "do not know", "maybe"), {"uncertain", "maybe"}),
 }
 
-def load_corpus(path=CORPUS_PATH):
+def load_meanings(path=MEANINGS_PATH):
+    """Read optional English paraphrases without adding them to retrieval text."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        return {(row.get("collection", "").strip(), row.get("id", "").strip()): {"meaning_en": row.get("meaning_en", "").strip(), "meaning_source": row.get("meaning_source", "").strip()} for row in csv.DictReader(file) if row.get("collection") and row.get("id")}
+
+def load_corpus(path=CORPUS_PATH, meanings_path=MEANINGS_PATH):
+    with Path(path).open(encoding="utf-8-sig", newline="") as file:
+        rows = list(csv.DictReader(file))
+    if not rows or any(not row.get("collection", "").strip() for row in rows):
+        raise ValueError("Expected a non-empty combined corpus with a collection column.")
+    meanings = load_meanings(meanings_path)
+    for row in rows:
+        row.update(meanings.get((row["collection"], row["poem_id"]), {"meaning_en": "", "meaning_source": ""}))
+    return rows
+
+
+def load_natrinai_corpus(path=NATRINAI_CORPUS_PATH):
+    """Read the original Natrinai source without modifying its legacy schema."""
     with Path(path).open(encoding="utf-8-sig", newline="") as file:
         rows = list(csv.DictReader(file))
     if len(rows) != 399:
@@ -54,9 +80,9 @@ def submitted_sentences(query):
 
 def ensure_single_situation(query):
     sentences = submitted_sentences(query)
-    if len(sentences) != 1:
-        raise ValueError("Please submit one situation at a time; multiple sentences can describe different contexts.")
-    return sentences[0]
+    if not 1 <= len(sentences) <= 2:
+        raise ValueError("Please submit one or two sentences at a time.")
+    return (query or "").strip()
 
 def interpretation_value(value="", basis="", certainty="uncertain"):
     """A deliberately modest query-reading record, not a trained classifier."""
@@ -102,11 +128,16 @@ def contextual_interpretation(sentence):
     """
     sentence = ensure_single_situation(sentence)
     terms, text = set(normalize(sentence)), sentence.casefold()
-    relationship_language = bool({"love", "loved", "lover", "relationship", "partner"} & terms) or "loved one" in text
+    romantic_cues = {"love", "loved", "lover", "husband", "wife", "boyfriend", "girlfriend", "dating", "relationship"}
+    work_cues = {"business", "shop", "company", "colleague", "boss", "work"}
+    relationship_language = bool(terms & romantic_cues) or "loved one" in text or bool(re.search(r"miss\s+(him|her)\b", text))
+    friendship_language = "friend" in terms
     if any(phrase in text for phrase in ("looking forward", "cannot wait", "can't wait", "expecting")) and relationship_language:
         return interpretation_value("anticipation", "explicit expectation language in a relationship context", "tentative")
     if ({"waiting", "wait", "return"} & terms) and relationship_language:
         return interpretation_value("longing", "waiting/return and relationship language", "tentative")
+    if "miss" in terms and friendship_language:
+        return interpretation_value("longing", "missing language in a friendship context", "tentative")
     if any(phrase in text for phrase in ("don't know", "do not know", "not sure", "uncertain", "unsure")):
         return interpretation_value("uncertainty", "explicit uncertainty language", "tentative")
     if ({"conflict", "quarrel", "troubled", "misunderstood", "misunderstanding", "betrayal", "estrangement"} & terms) and relationship_language:
@@ -147,16 +178,19 @@ def interpret_query(query, rows=None):
     contextual = contextual_interpretation(query)
     terms = set(normalize(query))
     text = query.casefold()
-    relationship_words = {"love", "loved", "lover", "partner", "relationship"}
-    has_relationship = bool(terms & relationship_words) or "loved one" in text
-    domain = interpretation_value("Akam", "relationship/love language in the user situation", "tentative") if has_relationship else interpretation_value(basis="No clear Akam/Puram signal in the user text.")
+    romantic_cues = {"love", "loved", "lover", "husband", "wife", "boyfriend", "girlfriend", "dating", "relationship"}
+    work_cues = {"business", "shop", "company", "colleague", "boss", "work"}
+    has_romantic_relationship = (bool(terms & romantic_cues) or "loved one" in text or bool(re.search(r"miss\s+(him|her)\b", text))) and not ("partner" in terms and bool(terms & work_cues))
+    has_friendship = "friend" in terms
+    has_work_partner = "partner" in terms and bool(terms & work_cues)
+    domain = interpretation_value("Akam", "relationship/love language in the user situation", "tentative") if has_romantic_relationship else interpretation_value(basis="No clear Akam/Puram signal in the user text.")
     confidence = emotion_detection["confidence"]
     certainty = f"{confidence:.3f}" if isinstance(confidence, float) else confidence
     evidence = emotion_detection.get("evidence", {})
     cue_text = ", ".join(evidence.get(emotion_detection["primary"], {}).get("phrases", []) + evidence.get(emotion_detection["primary"], {}).get("words", []))
     emotion = interpretation_value(emotion_detection["primary"], ("Model prediction" if "pretrained" in emotion_detection["method"] else "Fallback cues") + (f": {cue_text}" if cue_text else ""), certainty)
     uri = interpretation_value()
-    relationship = interpretation_value("lovers / intimate relationship", "relationship language in the user text", "tentative") if has_relationship else interpretation_value()
+    relationship = interpretation_value("lovers / intimate relationship", "explicit romantic language in the user text", "tentative") if has_romantic_relationship else interpretation_value("colleague / associate", "partner appears with business/work language", "tentative") if has_work_partner else interpretation_value("friendship", "explicit friend language in the user text", "tentative") if has_friendship else interpretation_value()
     if situation["value"] == "waiting for a loved one's return":
         uri = interpretation_value("iruttal", "waiting action is compatible with the controlled Uri term; requires literary review", "tentative")
     elif situation["value"] == "secret meeting at night":
@@ -170,14 +204,14 @@ def interpret_query(query, rows=None):
     # The project framework forbids a fixed Tinai-to-Uri mapping.  This pilot
     # consequently withholds a Tinai rather than pretending one follows.
     tinai = interpretation_value(basis="No automatic Tinai inference: a modern emotion/action does not establish a Tinai.")
-    supported_uri = bool(rows and uri["value"] and any(row.get("uri") == uri["value"] for row in rows))
+    supported_uri = bool(rows and uri["value"] and any(row.get("akam_puram") == "Akam" and row.get("uri") == uri["value"] for row in rows))
     routing = interpretation_value(uri["value"] if supported_uri else "", "The inferred Uri has corpus support." if supported_uri else "No matching reviewed/draft corpus Uri support; cultural filter will be relaxed.", "tentative" if supported_uri else "uncertain")
     notice = "Pretrained English emotion inference is used when available; it has seven labels and cannot directly identify longing or hope." if "pretrained" in emotion_detection["method"] else "Rule-based fallback is active because the pretrained model is unavailable; it is not a trained or validated cultural classifier."
     return {"processing_order":["emotion detection", "situation understanding", "contextual interpretation", "Akam/Puram interpretation", "candidate Tinai/Uri identification", "retrieval"], "emotion_detection":emotion_detection, "emotion": emotion, "contextual_interpretation": contextual, "situation": situation, "relationship": relationship, "domain": domain, "tinai": tinai, "uri": uri, "routing_uri": routing, "prototype_notice": notice}
 
 def keyword_results(rows, query):
     query = ensure_single_situation(query)
-    terms, weights, out = set(normalize(_vector_query(query))) - GENERIC_TERMS, {"keywords":4,"situation":3,"emotion":3,"characters":1,"poem_text":1,"tinai":1,"uri":2}, []
+    terms, weights, out = set(normalize(_vector_query(query))) - GENERIC_TERMS, {"keywords":4,"situation":3,"chapter_gloss_en":3,"emotion":3,"characters":1,"poem_text":1,"tinai":1,"uri":2}, []
     for row in rows:
         evidence = {field: sorted(terms & set(normalize(row.get(field, "")))) for field in weights}
         evidence = {field: hits for field, hits in evidence.items() if hits}
@@ -188,8 +222,13 @@ def keyword_results(rows, query):
 
 def _searchable_text(row):
     """Use poem content and retrieval annotations, excluding generic role labels."""
-    fields = ("poem_text", "emotion", "situation", "keywords", "tinai", "uri")
+    fields = ("poem_text", "chapter_gloss_en", "emotion", "situation", "keywords", "tinai", "uri")
     return " ".join(row.get(field, "") for field in fields)
+
+def _semantic_document(row):
+    """Embed original poem text plus populated corpus annotations, never invented translations."""
+    fields = ("poem_text", "chapter_gloss_en", "emotion", "situation", "keywords", "tinai", "uri")
+    return " ".join(row.get(field, "") for field in fields if row.get(field, "").strip())
 
 def _vector_query(query):
     """Add independently detected situation terms, not an emotion-to-Tinai shortcut."""
@@ -199,7 +238,7 @@ def _vector_query(query):
 
 def _matching_evidence(row, query):
     terms = set(normalize(_vector_query(query))) - GENERIC_TERMS
-    fields = ("situation", "keywords", "emotion", "uri", "tinai", "poem_text")
+    fields = ("chapter_gloss_en", "situation", "keywords", "emotion", "uri", "tinai", "poem_text")
     evidence = {field: sorted(terms & (set(normalize(row.get(field, ""))) - GENERIC_TERMS)) for field in fields}
     return {field: hits for field, hits in evidence.items() if hits}
 
@@ -217,6 +256,40 @@ def vector_results(rows, query):
         explanation = "TF-IDF similarity; matching corpus evidence: " + "; ".join(f"{field}: {', '.join(hits)}" for field, hits in evidence.items()) if flattened else "TF-IDF similarity with no direct non-generic annotation overlap."
         out.append({"row":row,"score":float(score),"evidence":evidence,"explanation":explanation})
     return sorted(out, key=lambda x:(-x["score"], int(x["row"]["poem_number"])))
+
+def semantic_results(rows, query):
+    """Cross-lingual English-query/Tamil-poem cosine retrieval, loaded lazily."""
+    query = ensure_single_situation(query)
+    documents = [_semantic_document(row) for row in rows]
+    try:
+        corpus = corpus_embeddings(documents)
+        query_vector = encode([query], "query: ")[0]
+    except SemanticModelUnavailable as exc:
+        return [], f"Semantic retrieval unavailable: {exc}. Use TF-IDF Retrieval or set {SEMANTIC_MODEL_NAME} up locally."
+    scores, out = corpus @ query_vector, []
+    for row, score in zip(rows, scores):
+        if score <= 0:
+            continue
+        evidence = {"semantic": ["cross-lingual similarity over original poem text and populated corpus annotations"]}
+        out.append({"row": row, "score": float(score), "score_type": "Cross-lingual embedding cosine similarity; not a probability", "evidence": evidence, "explanation": "Semantic similarity from the multilingual embedding model; inspect the corpus annotations and source before judging literary relevance."})
+    return sorted(out, key=lambda x:(-x["score"], int(x["row"]["poem_number"]))), ""
+
+def hybrid_results(rows, query):
+    """Combine independent lexical TF-IDF and multilingual semantic rankings."""
+    semantic, unavailable = semantic_results(rows, query)
+    if unavailable:
+        return [], unavailable
+    lexical = {item["row"]["poem_id"]: item for item in vector_results(rows, query)}
+    semantic_max = max((item["score"] for item in semantic), default=0.0)
+    lexical_max = max((item["score"] for item in lexical.values()), default=0.0)
+    out = []
+    for item in semantic:
+        base = lexical[item["row"]["poem_id"]]
+        semantic_score = item["score"] / semantic_max if semantic_max else 0.0
+        lexical_score = base["score"] / lexical_max if lexical_max else 0.0
+        evidence = {**base["evidence"], **item["evidence"]}
+        out.append({"row": item["row"], "score": .70 * semantic_score + .30 * lexical_score, "score_type": "Hybrid normalized semantic (70%) and TF-IDF (30%) ranking score; not a probability", "evidence": evidence, "explanation": item["explanation"] + (" TF-IDF evidence: " + "; ".join(f"{field}: {', '.join(hits)}" for field, hits in base["evidence"].items()) if base["evidence"] else " No direct non-generic TF-IDF overlap.")})
+    return sorted(out, key=lambda x:(-x["score"], int(x["row"]["poem_number"]))), ""
 
 def emotion_results(rows, query, selected=""):
     detected = detect_emotions(query)
@@ -236,10 +309,14 @@ def emotion_results(rows, query, selected=""):
 def cultural_results(rows, query, tinai="", uri=""):
     interpretation = interpret_query(query, rows)
     routed_uri = uri or interpretation["routing_uri"]["value"]
-    context = ["Akam scope (all Natrinai records in this pilot)", f"Tinai: {tinai} (advanced user constraint)" if tinai else interpretation["tinai"]["basis"], f"Uri routing: {routed_uri}" if routed_uri else interpretation["routing_uri"]["basis"]]
+    akam_rows = [row for row in rows if row.get("akam_puram") == "Akam"]
+    context = [f"Akam-only cultural routing over {len(akam_rows)} explicitly Akam records; non-Akam collections receive no Tinai/Uri routing.", f"Tinai: {tinai} (advanced user constraint)" if tinai else interpretation["tinai"]["basis"], f"Uri routing: {routed_uri}" if routed_uri else interpretation["routing_uri"]["basis"]]
     out = vector_results(rows, query)
     for item in out:
         row, notes = item["row"], []
+        if row.get("akam_puram") != "Akam":
+            item["explanation"] += " Cultural routing: not applied because this collection is not annotated as Akam."
+            continue
         if tinai and row["tinai"] == tinai: item["score"] += .45; notes.append("Tinai match")
         elif tinai: item["score"] -= .12; notes.append("different Tinai")
         if routed_uri and row["uri"] == routed_uri:
@@ -258,7 +335,53 @@ def _meaningful_results(items):
 def _no_match_context(context):
     return [*context, "No strong corpus match: the query produced no positive score with supporting corpus evidence. Try a more specific situation or a different retrieval method."]
 
+def _mark_semantic_weak_matches(items):
+    """Label tightly clustered semantic rankings without treating scores as relevance."""
+    if not items:
+        return items
+    spread = items[0]["score"] - median(item["score"] for item in items)
+    no_tfidf_overlap = all(set(item["evidence"]) <= {"semantic"} for item in items)
+    weak = spread < SEMANTIC_WEAK_SPREAD or (no_tfidf_overlap and spread < SEMANTIC_WEAK_SPREAD / 2)
+    for item in items:
+        item["weak_match"] = weak
+    return items
+
+def auto_results(rows, query):
+    """Fuse independent retrieval ranks without comparing their raw scores."""
+    components, unavailable_methods = [], []
+    keyword = _meaningful_results(keyword_results(rows, query))[:20]
+    if keyword:
+        components.append(("keyword", keyword))
+    tfidf = _meaningful_results(vector_results(rows, query))[:20]
+    if tfidf:
+        components.append(("tfidf", tfidf))
+    semantic, unavailable = semantic_results(rows, query)
+    if not unavailable:
+        semantic = _mark_semantic_weak_matches(_meaningful_results(semantic)[:20])
+        if semantic:
+            components.append(("semantic", semantic))
+    else:
+        unavailable_methods.append("Semantic unavailable")
+    if not components:
+        return [], [], unavailable_methods
+
+    fused = {}
+    for method, results in components:
+        for rank, item in enumerate(results, 1):
+            row = item["row"]
+            key = (row.get("collection", ""), row["poem_id"])
+            entry = fused.setdefault(key, {"row": row, "score": 0.0, "ranks": [], "semantic_weak": []})
+            entry["score"] += 1 / (60 + rank)
+            entry["ranks"].append(f"{method} #{rank}")
+            if method == "semantic": entry["semantic_weak"].append(bool(item.get("weak_match")))
+    results = []
+    for entry in fused.values():
+        ranks = entry["ranks"]
+        results.append({"row": entry["row"], "score": entry["score"], "score_type": "Reciprocal rank fusion score; not a probability", "evidence": {"rank_fusion": ranks}, "explanation": "Rank fusion: " + ", ".join(ranks), "weak_match": any(entry["semantic_weak"])})
+    return sorted(results, key=lambda item: (-item["score"], item["row"].get("collection", ""), item["row"]["poem_id"])), [method for method, _ in components], unavailable_methods
+
 def retrieve(rows, model, query, emotion="", tinai="", uri="", limit=10):
+    normalized_model = "".join((model or "").casefold().split())
     if model == "Keyword matching":
         context, results = ["Transparent lexical matching across text and populated annotations."], _meaningful_results(keyword_results(rows, query))
         return results[:limit], context if results else _no_match_context(context)
@@ -269,6 +392,29 @@ def retrieve(rows, model, query, emotion="", tinai="", uri="", limit=10):
         result, context = cultural_results(rows, query, tinai, uri)
         results = _meaningful_results(result)
         return results[:limit], context if results else _no_match_context(context)
+    if normalized_model == "auto":
+        result, components, unavailable_methods = auto_results(rows, query)
+        context = ["Auto rank fusion: reciprocal rank fusion over the top 20 results from each available component method."]
+        if not result:
+            return [], _no_match_context(context)
+        if len(components) == 1:
+            context[0] = "Auto fallback: one component returned results; no rank fusion was applied."
+        availability = ("; ".join(unavailable_methods) + ". " if unavailable_methods else "") + "Used methods: " + ", ".join(components) + "."
+        return result[:min(limit, 10)], [*context, availability]
+    if normalized_model == "semanticretrieval":
+        result, unavailable = semantic_results(rows, query)
+        context = [f"Lazy CPU-only semantic retrieval using {SEMANTIC_MODEL_NAME} over original poem text and populated annotations."]
+        if unavailable:
+            return [], [unavailable]
+        results = _mark_semantic_weak_matches(_meaningful_results(result)[:limit])
+        return results, context if results else _no_match_context(context)
+    if normalized_model == "hybridretrieval":
+        result, unavailable = hybrid_results(rows, query)
+        context = ["Hybrid ranking: normalized multilingual semantic score (70%) plus TF-IDF score (30%)."]
+        if unavailable:
+            return [], [unavailable]
+        results = _mark_semantic_weak_matches(_meaningful_results(result)[:limit])
+        return results, context if results else _no_match_context(context)
     context, results = ["Offline TF-IDF cosine fallback. A sentence-embedding model is unavailable, so this is not claimed as embedding-based semantic retrieval."], _meaningful_results(vector_results(rows, query))
     return results[:limit], context if results else _no_match_context(context)
 

@@ -3,15 +3,15 @@ import csv, sys
 from collections import defaultdict
 from pathlib import Path
 
-COLUMNS = ["poem_id","work","poem_number","poem_text","akam_puram","tinai","uri","emotion","situation","characters","keywords","source","source_url","translation","annotation_notes","annotation_status"]
-WORKS = {"Natrinai"}
+COLUMNS = ["collection","poem_id","work","poem_number","title","section","chapter_gloss_en","poem_text","akam_puram","tinai","uri","emotion","situation","characters","keywords","source","source_url","translation","annotation_notes","annotation_status"]
+WORKS = {"Natrinai", "Thirukkural"}
 AKAM_PURAM = {"Akam","Puram"}
 TINAI = {"Kurinji","Mullai","Marutham","Neithal","Palai"}
 URI = {"punartal","pirital","iruttal","irankal","utal"}
 STATUSES = {"draft","reviewed","validated","needs_review"}
 
 def main():
-    path = Path(__file__).resolve().parents[1] / "data" / "corpus" / "poetry_schema.csv"
+    path = Path(__file__).resolve().parents[1] / "data" / "corpus" / "combined_poetry_schema.csv"
     errors, ids, pairs, texts = [], {}, {}, {}
     try:
         with path.open(encoding="utf-8-sig", newline="") as f:
@@ -26,9 +26,12 @@ def main():
         print(f"Schema validation failed: {exc}"); return 1
     for n, row in enumerate(rows, 2):
         def value(k): return (row.get(k) or "").strip()
-        for key in ("poem_id","work","poem_number","poem_text","source","source_url","annotation_status"):
+        for key in ("collection","poem_id","work","poem_number","poem_text","source","source_url","annotation_status"):
             if not value(key): errors.append(f"Row {n}: {key} is required.")
         if value("work") and value("work") not in WORKS: errors.append(f"Row {n}: invalid work '{value('work')}'.")
+        if value("collection") != value("work"): errors.append(f"Row {n}: collection must match work.")
+        if value("work") == "Thirukkural" and not value("chapter_gloss_en"): errors.append(f"Row {n}: Thirukkural requires chapter_gloss_en.")
+        if value("work") == "Natrinai" and value("chapter_gloss_en"): errors.append(f"Row {n}: Natrinai chapter_gloss_en must remain empty.")
         if value("akam_puram") and value("akam_puram") not in AKAM_PURAM: errors.append(f"Row {n}: invalid akam_puram.")
         if value("tinai") and value("tinai") not in TINAI: errors.append(f"Row {n}: invalid tinai.")
         if value("uri") and value("uri") not in URI: errors.append(f"Row {n}: invalid uri '{value('uri')}'.")

@@ -3,17 +3,38 @@ from pathlib import Path
 import pytest
 
 os.environ["CLASSICAL_TAMIL_EMOTION_FORCE_FALLBACK"] = "1"
+os.environ["CLASSICAL_TAMIL_SEMANTIC_DISABLE"] = "1"
 
 from fastapi import HTTPException
 from api import RetrieveRequest, search
-from src.retrieval.core import contextual_interpretation, cultural_results, detect_emotions, detect_rule_based_emotions, interpret_query, keyword_results, load_corpus, metrics, retrieve, vector_results
+from src.retrieval.core import _mark_semantic_weak_matches, auto_results, contextual_interpretation, cultural_results, detect_emotions, detect_rule_based_emotions, interpret_query, keyword_results, load_corpus, load_meanings, load_natrinai_corpus, metrics, retrieve, semantic_results, vector_results
+from src.retrieval.semantic_model import corpus_embeddings
 from src.retrieval.emotion_model import MODEL_NAME, format_pretrained_output
 
 def test_corpus_loads():
     rows = load_corpus()
-    assert len(rows) == 399
+    assert len(rows) == 1729
     assert all(r["poem_text"] and r["source_url"] for r in rows)
-    assert not any(r["poem_number"] == "234" for r in rows)
+    assert {row["collection"] for row in rows} == {"Natrinai", "Thirukkural"}
+
+def test_natrinai_source_rows_are_preserved_in_the_combined_corpus():
+    original = load_natrinai_corpus()
+    combined = [row for row in load_corpus() if row["collection"] == "Natrinai"]
+    assert len(original) == len(combined) == 399
+    assert [{key: row[key] for key in row} for row in original] == [{key: row[key] for key in original[0]} for row in combined]
+
+def test_cultural_routing_does_not_apply_to_non_akam_collections():
+    thirukkural = next(row for row in load_corpus() if row["collection"] == "Thirukkural")
+    results, context = cultural_results([thirukkural], "separation", tinai="Palai", uri="pirital")
+    assert "non-Akam collections receive no Tinai/Uri routing" in context[0]
+    assert "not applied because this collection is not annotated as Akam" in results[0]["explanation"]
+    assert "Tinai match" not in results[0]["explanation"]
+
+def test_thirukkural_chapter_glosses_support_english_discovery_without_cultural_labels():
+    rows = [row for row in load_corpus() if row["collection"] == "Thirukkural"]
+    assert len(rows) == 1330 and all(row["chapter_gloss_en"] for row in rows)
+    assert all(not row["tinai"] and not row["uri"] for row in rows)
+    assert keyword_results(rows, "anger")[0]["row"]["poem_id"].startswith("TK")
 
 def test_keyword_ranking():
     result = keyword_results(load_corpus(), "separation journey")
@@ -104,11 +125,11 @@ def test_api_returns_emotion_model_metadata_without_network():
     emotion = response["interpretation"]["emotion_detection"]
     assert emotion["model_name"] == MODEL_NAME
     assert "method" in emotion and "alternative_scores" in emotion
-    assert response["results"] and response["results"][0]["poem_id"].startswith("NT")
+    assert response["results"] and response["results"][0]["poem_id"].startswith(("NT", "TK"))
 
 def test_single_situation_guard_and_explicit_context_detection():
-    with pytest.raises(ValueError, match="one situation"):
-        interpret_query("I wait for them. I meet them at night.", load_corpus())
+    interpretation = interpret_query("I wait for them. I meet them at night.", load_corpus())
+    assert interpretation["situation"]["value"] == "secret meeting at night"
     query = "I am worried that my journey will separate me from someone I love."
     interpretation = interpret_query(query, load_corpus())
     assert interpretation["situation"]["value"] == "fear of separation during a journey"
@@ -124,11 +145,11 @@ def test_vector_evidence_excludes_generic_character_roles():
 def test_tfidf_real_annotation_overlap_is_nonzero():
     results = vector_results(load_corpus(), "I want to meet my loved one secretly at night.")
     assert results[0]["score"] > 0
-    assert "meeting" in results[0]["evidence"].get("situation", []) or "meeting" in results[0]["evidence"].get("keywords", [])
+    assert "meeting" in results[0]["evidence"].get("situation", []) or "meeting" in results[0]["evidence"].get("keywords", []) or "meeting" in results[0]["evidence"].get("chapter_gloss_en", [])
 
 def test_api_rejects_multiple_contexts():
     with pytest.raises(HTTPException) as error:
-        search(RetrieveRequest(query="I wait for them. I meet them at night."))
+        search(RetrieveRequest(query="I wait for them. I meet them at night. I travel tomorrow."))
     assert error.value.status_code == 422
 
 def test_frontend_has_one_default_query_and_replaces_it_with_an_example():
@@ -159,3 +180,115 @@ def test_api_no_match_response_does_not_serialize_arbitrary_first_records():
     assert response["no_strong_match"] is True
     assert response["results"] == []
     assert any("No strong corpus match" in message for message in response["context"])
+
+def test_semantic_retrieval_can_be_disabled_without_loading_weights():
+    results, context = retrieve(load_corpus(), "Semantic retrieval", "An unfamiliar description of a quiet reunion.")
+    assert results == []
+    assert "Semantic retrieval unavailable" in context[0]
+
+def test_semantic_result_format_is_truthful_when_encoder_is_mocked(monkeypatch):
+    rows = load_corpus()[:2]
+    monkeypatch.setattr("src.retrieval.core.corpus_embeddings", lambda documents: __import__("numpy").array([[1.0, 0.0], [0.0, 1.0]]))
+    monkeypatch.setattr("src.retrieval.core.encode", lambda texts, prefix: __import__("numpy").array([[1.0, 0.0]]))
+    results, unavailable = semantic_results(rows, "A previously unseen English situation")
+    assert not unavailable and results[0]["row"]["poem_id"] == rows[0]["poem_id"]
+    assert results[0]["score"] == 1.0
+    assert "semantic" in results[0]["evidence"]
+
+def test_semantic_dispatch_accepts_space_less_method_name(monkeypatch):
+    rows = load_corpus()[:2]
+    monkeypatch.setattr("src.retrieval.core.semantic_results", lambda rows, query: ([{"row": rows[0], "score": .8, "evidence": {"semantic": ["mocked"]}, "explanation": "mocked"}], ""))
+    results, context = retrieve(rows, "Semanticretrieval", "A new sentence.")
+    assert results[0]["row"]["poem_id"] == rows[0]["poem_id"]
+    assert "semantic retrieval" in context[0].casefold()
+
+@pytest.mark.parametrize(("ui_model", "retrieval_model"), [
+    ("Semantic Retrieval", "Semantic retrieval"),
+    ("Hybrid Retrieval", "Hybrid retrieval"),
+])
+def test_api_dispatches_semantic_methods_from_the_ui(monkeypatch, ui_model, retrieval_model):
+    captured = {}
+    monkeypatch.setattr("api.retrieve", lambda rows, model, *args: (captured.setdefault("model", model) and [], []))
+    search(RetrieveRequest(query="I am waiting for someone I love to return.", model=ui_model))
+    assert captured["model"] == retrieval_model
+
+def test_friendship_is_not_interpreted_as_romantic():
+    interpretation = interpret_query("I miss my old friend.", load_corpus())
+    assert interpretation["contextual_interpretation"]["value"] == "longing"
+    assert interpretation["relationship"]["value"] == "friendship"
+    assert interpretation["domain"]["value"] == ""
+    assert interpretation["tinai"]["value"] == "" and interpretation["uri"]["value"] == ""
+
+def test_api_rejects_whitespace_only_query_with_clear_message():
+    with pytest.raises(HTTPException, match="Enter a sentence"):
+        search(RetrieveRequest(query="   "))
+
+def test_semantic_encoder_uses_e5_passage_prefix(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setenv("CLASSICAL_TAMIL_EMBEDDING_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr("src.retrieval.semantic_model.encode", lambda texts, prefix: calls.append((texts, prefix)) or __import__("numpy").array([[1.0, 0.0]]))
+    corpus_embeddings(["a poem"])
+    assert calls == [(["a poem"], "passage: ")]
+
+def test_semantic_weak_match_uses_configured_spread(monkeypatch):
+    monkeypatch.setattr("src.retrieval.core.SEMANTIC_WEAK_SPREAD", .03)
+    items = [{"score": .80, "evidence": {"semantic": ["similarity"]}}, {"score": .79, "evidence": {"semantic": ["similarity"]}}]
+    assert all(item["weak_match"] for item in _mark_semantic_weak_matches(items))
+
+def test_auto_rank_fusion_returns_unique_rows_with_rank_evidence(monkeypatch):
+    rows = [{"collection": "Natrinai", "poem_id": "NT001", "poem_number": "1"}, {"collection": "Thirukkural", "poem_id": "TK0001", "poem_number": "1"}]
+    def item(row, score=1.0): return {"row": row, "score": score, "evidence": {"mock": ["evidence"]}, "explanation": "mock"}
+    monkeypatch.setattr("src.retrieval.core.keyword_results", lambda *_: [item(rows[0]), item(rows[1])])
+    monkeypatch.setattr("src.retrieval.core.vector_results", lambda *_: [item(rows[1]), item(rows[0])])
+    monkeypatch.setattr("src.retrieval.core.semantic_results", lambda *_: ([item(rows[0])], ""))
+    results, methods, unavailable = auto_results(rows, "query")
+    assert methods == ["keyword", "tfidf", "semantic"]
+    assert unavailable == []
+    assert len(results) == 2 and len({(x["row"]["collection"], x["row"]["poem_id"]) for x in results}) == 2
+    assert results[0]["score_type"] == "Reciprocal rank fusion score; not a probability"
+    assert "Rank fusion:" in results[0]["explanation"]
+
+def test_auto_abstains_when_every_component_abstains(monkeypatch):
+    monkeypatch.setattr("src.retrieval.core.keyword_results", lambda *_: [])
+    monkeypatch.setattr("src.retrieval.core.vector_results", lambda *_: [])
+    monkeypatch.setattr("src.retrieval.core.semantic_results", lambda *_: ([], ""))
+    monkeypatch.setattr("src.retrieval.core.hybrid_results", lambda *_: ([], ""))
+    results, context = retrieve([], "auto", "xylophones beneath a satellite")
+    assert results == [] and any("No strong corpus match" in message for message in context)
+
+def test_auto_does_not_change_direct_method_results():
+    rows = load_corpus()
+    before = retrieve(rows, "Vector similarity fallback", "anger")
+    retrieve(rows, "auto", "anger")
+    after = retrieve(rows, "Vector similarity fallback", "anger")
+    assert before == after
+
+def test_thirukkural_parser_excludes_colophons_and_keeps_kural_1330_intact():
+    from scripts.build_combined_corpus import RAW_PATH, parse_thirukkural
+    rows = parse_thirukkural(RAW_PATH.read_text(encoding="utf-8"))
+    assert len(rows) == 1330
+    assert all("முற்றிற்று" not in row["poem_text"] and "this page was first put up" not in row["poem_text"].casefold() for row in rows)
+    assert len(rows[-1]["poem_text"].splitlines()) == 2
+
+def test_business_partner_is_not_interpreted_as_lovers():
+    interpretation = interpret_query("My business partner and I run a shop.", load_corpus())
+    assert interpretation["relationship"]["value"] == "colleague / associate"
+    assert interpretation["domain"]["value"] == ""
+
+def test_auto_reports_unavailable_semantic_component(monkeypatch):
+    row = {"collection": "Natrinai", "poem_id": "NT001", "poem_number": "1"}
+    item = {"row": row, "score": 1.0, "evidence": {"keyword": ["match"]}, "explanation": "match"}
+    monkeypatch.setattr("src.retrieval.core.keyword_results", lambda *_: [item])
+    monkeypatch.setattr("src.retrieval.core.vector_results", lambda *_: [item])
+    monkeypatch.setattr("src.retrieval.core.semantic_results", lambda *_: ([], "unavailable"))
+    results, context = retrieve([row], "auto", "query")
+    assert results and any("Semantic unavailable" in message and "Used methods: keyword, tfidf." in message for message in context)
+
+def test_optional_meanings_loader_handles_absent_present_and_missing_ids(tmp_path):
+    absent = tmp_path / "absent.csv"
+    assert load_meanings(absent) == {}
+    meanings = tmp_path / "meanings_en.csv"
+    meanings.write_text("collection,id,meaning_en,meaning_source\nThirukkural,TK0001,A paraphrase,editorial\n", encoding="utf-8")
+    rows = load_corpus(meanings_path=meanings)
+    assert next(row for row in rows if row["poem_id"] == "TK0001")["meaning_en"] == "A paraphrase"
+    assert next(row for row in rows if row["poem_id"] == "TK0002")["meaning_en"] == ""

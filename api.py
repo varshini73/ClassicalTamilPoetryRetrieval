@@ -15,20 +15,20 @@ app = FastAPI(title="Classical Tamil Poetry Retrieval API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 class RetrieveRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=3000)
-    model: str = "TF-IDF Retrieval"
+    query: str = Field(min_length=1, max_length=1000)
+    model: str = "Auto (rank fusion)"
     emotion: str = ""
     tinai: str = ""
     uri: str = ""
     limit: int = Field(default=10, ge=1, le=30)
 
-MODEL_MAP = {"Keyword Matching":"Keyword matching", "TF-IDF Retrieval":"Vector similarity fallback", "Emotion-Aware Retrieval":"Emotion-aware", "Culturally Grounded Tinai/Uri Routing":"Culturally grounded routing"}
+MODEL_MAP = {"Keyword Matching":"Keyword matching", "TF-IDF Retrieval":"Vector similarity fallback", "Emotion-Aware Retrieval":"Emotion-aware", "Culturally Grounded Tinai/Uri Routing":"Culturally grounded routing", "Semantic Retrieval":"Semantic retrieval", "Hybrid Retrieval":"Hybrid retrieval", "Auto (rank fusion)":"auto"}
 
 def serialize(item: dict, rank: int) -> dict:
     row = item["row"]
     score = item["score"]
-    relevance = "Weak match: limited corpus evidence; inspect the annotations and source." if score < 0.10 else "Ranked from available corpus annotations and retrieval evidence."
-    return {"rank":rank, "score":score, "score_type":"TF-IDF cosine similarity / model-specific ranking score; not a probability", "explanation":item["explanation"], "evidence":item["evidence"], "relevance_note":relevance, **{key: row.get(key, "") for key in ("poem_id","poem_number","poem_text","akam_puram","tinai","uri","emotion","situation","characters","keywords","source","source_url","annotation_notes","annotation_status")}}
+    relevance = "Weak match: limited corpus evidence; inspect the annotations and source." if item.get("weak_match") or (score < 0.10 and item.get("score_type") != "Reciprocal rank fusion score; not a probability") else "Ranked from available corpus annotations and retrieval evidence."
+    return {"rank":rank, "score":score, "score_type":item.get("score_type", "TF-IDF cosine similarity / model-specific ranking score; not a probability"), "explanation":item["explanation"], "evidence":item["evidence"], "relevance_note":relevance, "weak_match":bool(item.get("weak_match")), **{key: row.get(key, "") for key in ("collection","poem_id","poem_number","title","section","chapter_gloss_en","meaning_en","meaning_source","poem_text","akam_puram","tinai","uri","emotion","situation","characters","keywords","source","source_url","annotation_notes","annotation_status")}}
 
 @app.get("/api/health")
 def health():
@@ -37,21 +37,26 @@ def health():
 @app.get("/api/dataset/stats")
 def stats():
     result = corpus_statistics(load_corpus())
-    return {**result, "source":"Project Madurai Unicode Etext PM296", "notes":"Poem 234 is excluded; poem 385 is source-incomplete. Blank and needs_review annotations remain uncertainty."}
+    return {**result, "source":"Project Madurai Unicode Etexts PM296 (Natrinai) and PM001 (Thirukkural)", "notes":"Blank and needs_review annotations remain uncertainty; Tinai/Uri routing is limited to explicitly Akam records."}
 
 @app.post("/api/retrieve")
 def search(request: RetrieveRequest):
+    query = request.query.strip()
+    if not query:
+        raise HTTPException(status_code=422, detail="Enter a sentence to search the corpus.")
     if request.model not in MODEL_MAP:
         raise HTTPException(status_code=422, detail="Unknown retrieval model.")
     if request.tinai and request.tinai not in TINAI:
         raise HTTPException(status_code=422, detail="Unknown Tinai constraint.")
     if request.uri and request.uri not in URI:
         raise HTTPException(status_code=422, detail="Unknown Uri constraint.")
-    if len(submitted_sentences(request.query)) != 1:
-        raise HTTPException(status_code=422, detail="Please submit one situation at a time. Multiple sentences can describe different contexts.")
+    sentences = submitted_sentences(query)
+    preset_examples = ("i'm waiting for someone i love to return", "i want to meet my loved one secretly at night", "my relationship is troubled by conflict", "i'm worried that my journey will separate me from someone i love")
+    if len(sentences) > 2 or sum(example in query.casefold() for example in preset_examples) >= 2:
+        raise HTTPException(status_code=422, detail="Please submit up to two sentences at a time; preset examples must be searched separately.")
     rows = load_corpus()
-    results, context = retrieve(rows, MODEL_MAP[request.model], request.query, request.emotion, request.tinai, request.uri, request.limit)
-    return {"model":request.model, "query":request.query, "interpretation":interpret_query(request.query, rows), "context":context, "no_strong_match":not results, "results":[serialize(item, i) for i, item in enumerate(results, 1)]}
+    results, context = retrieve(rows, MODEL_MAP[request.model], query, request.emotion, request.tinai, request.uri, request.limit)
+    return {"model":request.model, "query":query, "interpretation":interpret_query(query, rows), "context":context, "no_strong_match":not results, "results":[serialize(item, i) for i, item in enumerate(results, 1)]}
 
 @app.get("/api/evaluation/queries")
 def evaluation_queries():
