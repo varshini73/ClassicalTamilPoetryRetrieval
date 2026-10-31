@@ -1,0 +1,2 @@
+# Locally generated tool caches; existing tracked artifacts are deliberately untouched.
+frontend/node_modules/.vite/

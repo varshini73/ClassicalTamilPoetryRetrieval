@@ -7,8 +7,8 @@ os.environ["CLASSICAL_TAMIL_SEMANTIC_DISABLE"] = "1"
 
 from fastapi import HTTPException
 from api import RetrieveRequest, search, serialize
-from src.retrieval.core import MEANING_DEFAULTS, _mark_semantic_weak_matches, auto_results, contextual_interpretation, cultural_results, detect_emotions, detect_rule_based_emotions, interpret_query, keyword_results, load_corpus, load_curated_meanings, load_meanings, load_natrinai_corpus, metrics, ndcg_at_k, retrieve, semantic_results, vector_results
-from src.retrieval.semantic_model import corpus_embeddings
+from src.retrieval.core import MEANING_DEFAULTS, _mark_semantic_weak_matches, auto_results, contextual_interpretation, cultural_results, detect_emotions, detect_rule_based_emotions, hybrid_results, interpret_query, keyword_results, load_corpus, load_curated_meanings, load_meanings, load_natrinai_corpus, metrics, ndcg_at_k, retrieve, semantic_results, vector_results
+from src.retrieval.semantic_model import ALLOW_DOWNLOAD_ENV, CACHE_ENV, DISABLE_ENV, SemanticModelUnavailable, corpus_embeddings, get_semantic_model
 from src.retrieval.emotion_model import MODEL_NAME, format_pretrained_output
 
 def test_corpus_loads():
@@ -187,6 +187,39 @@ def test_semantic_retrieval_can_be_disabled_without_loading_weights():
     assert results == []
     assert "Semantic retrieval unavailable" in context[0]
 
+def test_semantic_model_is_explicitly_unavailable_when_disabled(monkeypatch):
+    monkeypatch.setenv(DISABLE_ENV, "1")
+    get_semantic_model.cache_clear()
+    with pytest.raises(SemanticModelUnavailable, match=DISABLE_ENV):
+        get_semantic_model()
+    get_semantic_model.cache_clear()
+
+def test_hybrid_combines_semantic_and_tfidf_components(monkeypatch):
+    row = {"collection": "Natrinai", "poem_id": "NT001", "poem_number": "1"}
+    monkeypatch.setattr("src.retrieval.core.semantic_results", lambda *_: ([{"row": row, "score": .8, "evidence": {"semantic": ["similarity"]}, "explanation": "semantic"}], ""))
+    monkeypatch.setattr("src.retrieval.core.vector_results", lambda *_: [{"row": row, "score": .5, "evidence": {"keywords": ["waiting"]}, "explanation": "tfidf"}])
+    results, unavailable = hybrid_results([row], "waiting")
+    assert not unavailable and results[0]["score"] == 1.0
+    assert results[0]["evidence"] == {"keywords": ["waiting"], "semantic": ["similarity"]}
+    assert "semantic (70%) and TF-IDF (30%)" in results[0]["score_type"]
+
+@pytest.mark.skipif(os.getenv("CLASSICAL_TAMIL_RUN_SEMANTIC_INTEGRATION") != "1", reason="set CLASSICAL_TAMIL_RUN_SEMANTIC_INTEGRATION=1 to use an already cached local model")
+def test_live_semantic_and_hybrid_with_cached_model(monkeypatch, tmp_path):
+    """Opt-in only: never downloads weights and writes any temporary vectors outside the repo."""
+    monkeypatch.delenv(DISABLE_ENV, raising=False)
+    monkeypatch.delenv(ALLOW_DOWNLOAD_ENV, raising=False)
+    monkeypatch.setenv(CACHE_ENV, str(tmp_path))
+    get_semantic_model.cache_clear()
+    rows = [row for row in load_corpus() if row["collection"] == "Natrinai"][:2]
+    semantic, unavailable = semantic_results(rows, "waiting for a return")
+    if unavailable:
+        pytest.skip(f"local semantic model unavailable: {unavailable}")
+    hybrid, hybrid_unavailable = hybrid_results(rows, "waiting for a return")
+    assert semantic and not hybrid_unavailable and hybrid
+    assert "Cross-lingual embedding" in semantic[0]["score_type"]
+    assert "semantic (70%) and TF-IDF (30%)" in hybrid[0]["score_type"]
+    get_semantic_model.cache_clear()
+
 def test_semantic_result_format_is_truthful_when_encoder_is_mocked(monkeypatch):
     rows = load_corpus()[:2]
     monkeypatch.setattr("src.retrieval.core.corpus_embeddings", lambda documents: __import__("numpy").array([[1.0, 0.0], [0.0, 1.0]]))
@@ -206,8 +239,9 @@ def test_semantic_dispatch_accepts_space_less_method_name(monkeypatch):
 @pytest.mark.parametrize(("ui_model", "retrieval_model"), [
     ("Semantic Retrieval", "Semantic retrieval"),
     ("Hybrid Retrieval", "Hybrid retrieval"),
+    ("Auto (rank fusion)", "auto"),
 ])
-def test_api_dispatches_semantic_methods_from_the_ui(monkeypatch, ui_model, retrieval_model):
+def test_api_dispatches_semantic_and_auto_methods_from_the_ui(monkeypatch, ui_model, retrieval_model):
     captured = {}
     monkeypatch.setattr("api.retrieve", lambda rows, model, *args: (captured.setdefault("model", model) and [], []))
     search(RetrieveRequest(query="I am waiting for someone I love to return.", model=ui_model))

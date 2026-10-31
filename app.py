@@ -49,7 +49,7 @@ with retrieval:
 
 with evaluation:
     st.subheader("Modern-situation pilot set")
-    st.write("Six actual-corpus query candidates are marked unreviewed. Candidate IDs are review prompts, not gold judgments; definitive P@K, R@K, and MRR are withheld.")
+    st.write("Six actual-corpus query candidates are marked  . Candidate IDs are review prompts, not gold judgments; definitive P@K, R@K, and MRR are withheld.")
     st.dataframe(evaluation_rows(), use_container_width=True, hide_index=True)
     st.info("Metric status: 0 eligible queries with reviewed relevance judgments. Metric code is unit-tested with explicit synthetic judgments.")
 

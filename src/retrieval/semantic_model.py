@@ -15,6 +15,7 @@ MODEL_REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
 CACHE_ENV = "CLASSICAL_TAMIL_EMBEDDING_CACHE_DIR"
 DISABLE_ENV = "CLASSICAL_TAMIL_SEMANTIC_DISABLE"
 PROGRESS_ENV = "CLASSICAL_TAMIL_EMBEDDING_PROGRESS"
+ALLOW_DOWNLOAD_ENV = "CLASSICAL_TAMIL_ALLOW_MODEL_DOWNLOAD"
 BATCH_SIZE = 16
 
 
@@ -30,13 +31,22 @@ def embedding_cache_dir() -> Path:
 
 @lru_cache(maxsize=1)
 def get_semantic_model():
-    """Load tokenizer/model once, on CPU, only when semantic search is requested."""
+    """Load a locally cached tokenizer/model once, on CPU, when requested.
+
+    Downloads are deliberately opt-in so a normal API request cannot unexpectedly
+    fetch model weights.  Set ``CLASSICAL_TAMIL_ALLOW_MODEL_DOWNLOAD=1`` only
+    when deliberately provisioning the local Hugging Face cache.
+    """
     if os.getenv(DISABLE_ENV) == "1":
         raise SemanticModelUnavailable(f"{DISABLE_ENV}=1")
     try:
         from transformers import AutoModel, AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, revision=MODEL_REVISION)
-        model = AutoModel.from_pretrained(MODEL_NAME, revision=MODEL_REVISION)
+        options = {
+            "revision": MODEL_REVISION,
+            "local_files_only": os.getenv(ALLOW_DOWNLOAD_ENV) != "1",
+        }
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, **options)
+        model = AutoModel.from_pretrained(MODEL_NAME, **options)
         model.eval()
         return tokenizer, model
     except Exception as exc:

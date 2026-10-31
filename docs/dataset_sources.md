@@ -4,7 +4,7 @@
 
 | Source | Work | Edition/access | Use and limitation |
 |---|---|---|---|
-| [Project Madurai, Unicode Etext PM296](https://www.projectmadurai.org/pm_etexts/utf8/pmuni0296.html) | Natrinai | Project Madurai credits N. D. LogaSundaram and Selvanayagi for notes/proofreading and K. Kalyanasundaram for bare e-text/PDF. It permits redistribution when its header is retained. | 397 extracted records with direct URL provenance. Tinai headings and Tamil notes remain unreviewed evidence. |
+| [Project Madurai, Unicode Etext PM296](https://www.projectmadurai.org/pm_etexts/utf8/pmuni0296.html) | Natrinai | Project Madurai credits N. D. LogaSundaram and Selvanayagi for notes/proofreading and K. Kalyanasundaram for bare e-text/PDF. It permits redistribution when its header is retained. | 397 extracted records with direct URL provenance. Tinai headings and Tamil notes remain   evidence. |
 
 ## Excluded for now
 

@@ -46,6 +46,42 @@ emotion-aware reranking, and culturally grounded routing with optional
 **user-supplied** Tinai/Uri constraints. Uri is never inferred from Tinai;
 unresolved Uri rows remain eligible as a documented fallback.
 
+### Retrieval methods and ranking
+
+The FastAPI/React application offers six direct retrieval methods plus an
+optional automatic router:
+
+- **Keyword Matching** uses weighted lexical evidence from poem text and
+  populated annotations.
+- **TF-IDF Retrieval** uses offline cosine similarity over the same searchable
+  fields.
+- **Emotion-Aware Retrieval** reranks TF-IDF candidates using detected emotion
+  and existing corpus labels.
+- **Culturally Grounded Tinai/Uri Routing** applies only to records explicitly
+  annotated as Akam; it never derives Tinai from an emotion.
+- **Semantic Retrieval** uses the locally cached
+  `intfloat/multilingual-e5-small` model with E5 `query: ` and `passage: `
+  prefixes.
+- **Hybrid Retrieval** is a weighted blend of normalized semantic similarity
+  (70%) and TF-IDF similarity (30%). It is not reciprocal rank fusion.
+
+**Auto (rank fusion)** is separate from Hybrid. It uses reciprocal rank fusion
+over the available Keyword, TF-IDF, and Semantic rankings, records each
+contributing rank as evidence, and reports when Semantic retrieval is
+unavailable.
+
+Semantic weights are loaded from the local Hugging Face cache only. The API
+does not download them during a search. To deliberately allow a one-time
+download while provisioning a machine, set
+`CLASSICAL_TAMIL_ALLOW_MODEL_DOWNLOAD=1`; otherwise Semantic and Hybrid return
+a clear unavailable response and the other methods remain usable. To run the
+opt-in local integration check without permitting downloads, use:
+
+```powershell
+$env:CLASSICAL_TAMIL_RUN_SEMANTIC_INTEGRATION=1
+python -m pytest -q -p no:cacheprovider -k live_semantic
+```
+
 `data/evaluation/modern_query_pilot.csv` contains six real-corpus candidate
 sets for human relevance review. They are unreviewed, so the app does not
 report definitive P@K, R@K, or MRR until explicit relevance judgments exist.
