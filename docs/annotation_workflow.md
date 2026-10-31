@@ -71,7 +71,7 @@ models are prone to confident but ungrounded output.
 ## Row lifecycle example
 
 ```
-1. Annotator (human or AI-assisted) proposes akam_puram, tinai, uri,
+1. Annotator proposes akam_puram, tinai, uri,
    emotion, situation, characters, keywords for a poem.
    -> annotation_status = draft
 

@@ -342,6 +342,12 @@ def test_optional_meanings_loader_accepts_legacy_and_header_only_files(tmp_path)
     assert load_meanings(header_only) == {}
 
 
+def test_meaning_source_is_preserved_without_branding_rewrite(tmp_path):
+    meanings = tmp_path / "meanings_en.csv"
+    meanings.write_text('collection,id,meaning_en,meaning_source\nNatrinai,1,Meaning,Unverified explanation\n', encoding="utf-8")
+    assert load_meanings(meanings)[("natrinai", "nt001")]["meaning_source"] == "Unverified explanation"
+
+
 def test_optional_curated_meanings_are_safe_and_secondary_to_meanings_file(tmp_path):
     absent = tmp_path / "absent_curated.csv"
     assert load_curated_meanings(absent) == {}
