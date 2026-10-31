@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 NATRINAI_CORPUS_PATH = ROOT / "data" / "corpus" / "poetry_schema.csv"
 CORPUS_PATH = ROOT / "data" / "corpus" / "combined_poetry_schema.csv"
 MEANINGS_PATH = ROOT / "data" / "corpus" / "meanings_en.csv"
+CURATED_PATH = ROOT / "data" / "corpus" / "natrinai_curated.csv"
+MEANING_DEFAULTS = {"meaning_en": "", "plain_meaning": "", "speaker_context": "", "real_life_example": "", "meaning_source": "", "confidence": "", "review_status": "", "curated_situation": "", "curated_emotion": "", "modern_theme": "", "curation_notes": ""}
 TINAI = ("Kurinji", "Mullai", "Marutham", "Neithal", "Palai")
 URI = ("punartal", "pirital", "iruttal", "irankal", "utal")
 FIELDS = ("poem_text", "chapter_gloss_en", "emotion", "situation", "characters", "keywords", "tinai", "uri")
@@ -41,22 +43,77 @@ EMOTION_CUES = {
     "uncertainty": (("not sure", "uncertain", "do not know", "maybe"), {"uncertain", "maybe"}),
 }
 
+def _meaning_key(collection, identifier):
+    """Normalise optional meaning-file keys without changing corpus records."""
+    collection = str(collection or "").lstrip("\ufeff").strip().casefold()
+    identifier = str(identifier or "").lstrip("\ufeff").strip()
+    if identifier.isdigit():
+        number = int(identifier)
+        if collection == "natrinai":
+            identifier = f"NT{number:03d}"
+        elif collection == "thirukkural":
+            identifier = f"TK{number:04d}"
+    return collection, identifier.casefold()
+
+
 def load_meanings(path=MEANINGS_PATH):
     """Read optional English paraphrases without adding them to retrieval text."""
     path = Path(path)
     if not path.exists():
         return {}
     with path.open(encoding="utf-8-sig", newline="") as file:
-        return {(row.get("collection", "").strip(), row.get("id", "").strip()): {"meaning_en": row.get("meaning_en", "").strip(), "meaning_source": row.get("meaning_source", "").strip()} for row in csv.DictReader(file) if row.get("collection") and row.get("id")}
+        return {
+            _meaning_key(row.get("collection"), row.get("id")): {
+                "meaning_en": (row.get("plain_meaning") or row.get("meaning_en") or "").strip(),
+                "plain_meaning": (row.get("plain_meaning") or row.get("meaning_en") or "").strip(),
+                "speaker_context": (row.get("speaker_context") or "").strip(),
+                "real_life_example": (row.get("real_life_example") or "").strip(),
+                "meaning_source": (row.get("meaning_source") or "").strip(),
+                "confidence": "medium",
+                "review_status": "",
+                "curated_situation": "",
+                "curated_emotion": "",
+                "modern_theme": "",
+                "curation_notes": "",
+            }
+            for row in csv.DictReader(file)
+            if (row.get("collection") or "").strip() and (row.get("id") or "").strip()
+        }
 
-def load_corpus(path=CORPUS_PATH, meanings_path=MEANINGS_PATH):
+def load_curated_meanings(path=CURATED_PATH):
+    """Read optional Natrinai display metadata without adding it to retrieval fields."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        return {
+            _meaning_key(row.get("collection"), row.get("id")): {
+                "meaning_en": (row.get("plain_meaning") or "").strip(),
+                "plain_meaning": (row.get("plain_meaning") or "").strip(),
+                "speaker_context": (row.get("speaker_context") or "").strip(),
+                "real_life_example": (row.get("real_life_example") or "").strip(),
+                "meaning_source": (row.get("meaning_source") or "").strip(),
+                "confidence": (row.get("confidence") or "").strip(),
+                "review_status": (row.get("review_status") or "").strip(),
+                "curated_situation": (row.get("situation") or "").strip(),
+                "curated_emotion": (row.get("emotion") or "").strip(),
+                "modern_theme": (row.get("modern_theme") or "").strip(),
+                "curation_notes": (row.get("notes") or "").strip(),
+            }
+            for row in csv.DictReader(file)
+            if (row.get("collection") or "").strip() and (row.get("id") or "").strip()
+        }
+
+
+def load_corpus(path=CORPUS_PATH, meanings_path=MEANINGS_PATH, curated_path=CURATED_PATH):
     with Path(path).open(encoding="utf-8-sig", newline="") as file:
         rows = list(csv.DictReader(file))
     if not rows or any(not row.get("collection", "").strip() for row in rows):
         raise ValueError("Expected a non-empty combined corpus with a collection column.")
-    meanings = load_meanings(meanings_path)
+    meanings = load_curated_meanings(curated_path)
+    meanings.update(load_meanings(meanings_path))
     for row in rows:
-        row.update(meanings.get((row["collection"], row["poem_id"]), {"meaning_en": "", "meaning_source": ""}))
+        row.update(meanings.get(_meaning_key(row["collection"], row["poem_id"]), MEANING_DEFAULTS))
     return rows
 
 

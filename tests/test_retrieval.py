@@ -6,8 +6,8 @@ os.environ["CLASSICAL_TAMIL_EMOTION_FORCE_FALLBACK"] = "1"
 os.environ["CLASSICAL_TAMIL_SEMANTIC_DISABLE"] = "1"
 
 from fastapi import HTTPException
-from api import RetrieveRequest, search
-from src.retrieval.core import _mark_semantic_weak_matches, auto_results, contextual_interpretation, cultural_results, detect_emotions, detect_rule_based_emotions, interpret_query, keyword_results, load_corpus, load_meanings, load_natrinai_corpus, metrics, retrieve, semantic_results, vector_results
+from api import RetrieveRequest, search, serialize
+from src.retrieval.core import MEANING_DEFAULTS, _mark_semantic_weak_matches, auto_results, contextual_interpretation, cultural_results, detect_emotions, detect_rule_based_emotions, interpret_query, keyword_results, load_corpus, load_curated_meanings, load_meanings, load_natrinai_corpus, metrics, retrieve, semantic_results, vector_results
 from src.retrieval.semantic_model import corpus_embeddings
 from src.retrieval.emotion_model import MODEL_NAME, format_pretrained_output
 
@@ -284,11 +284,46 @@ def test_auto_reports_unavailable_semantic_component(monkeypatch):
     results, context = retrieve([row], "auto", "query")
     assert results and any("Semantic unavailable" in message and "Used methods: keyword, tfidf." in message for message in context)
 
-def test_optional_meanings_loader_handles_absent_present_and_missing_ids(tmp_path):
+def test_optional_meanings_loader_handles_new_columns_and_missing_ids(tmp_path):
     absent = tmp_path / "absent.csv"
     assert load_meanings(absent) == {}
     meanings = tmp_path / "meanings_en.csv"
-    meanings.write_text("collection,id,meaning_en,meaning_source\nThirukkural,TK0001,A paraphrase,editorial\n", encoding="utf-8")
+    meanings.write_text("\ufeffcollection,id,plain_meaning,speaker_context,real_life_example,meaning_source\n thIRUkKuRaL , 56 ,A paraphrase,A speaker,A modern example,editorial\n", encoding="utf-8")
     rows = load_corpus(meanings_path=meanings)
-    assert next(row for row in rows if row["poem_id"] == "TK0001")["meaning_en"] == "A paraphrase"
-    assert next(row for row in rows if row["poem_id"] == "TK0002")["meaning_en"] == ""
+    found = next(row for row in rows if row["poem_id"] == "TK0056")
+    assert found["plain_meaning"] == found["meaning_en"] == "A paraphrase"
+    assert found["speaker_context"] == "A speaker"
+    assert next(row for row in rows if row["poem_id"] == "TK0057")["plain_meaning"] == ""
+
+
+def test_optional_meanings_loader_accepts_legacy_and_header_only_files(tmp_path):
+    legacy = tmp_path / "legacy.csv"
+    legacy.write_text("collection,id,meaning_en,meaning_source\nNatrinai,1,Legacy meaning,editorial\n", encoding="utf-8")
+    assert load_meanings(legacy)[("natrinai", "nt001")]["plain_meaning"] == "Legacy meaning"
+    header_only = tmp_path / "header_only.csv"
+    header_only.write_text("collection,id,plain_meaning,speaker_context,real_life_example,meaning_source\n", encoding="utf-8")
+    assert load_meanings(header_only) == {}
+
+
+def test_optional_curated_meanings_are_safe_and_secondary_to_meanings_file(tmp_path):
+    absent = tmp_path / "absent_curated.csv"
+    assert load_curated_meanings(absent) == {}
+    curated = tmp_path / "natrinai_curated.csv"
+    curated.write_text("\ufeffcollection,id,plain_meaning,speaker_context,real_life_example,meaning_source,situation,emotion,modern_theme,confidence,review_status,notes\nNatrinai,1,Curated meaning,Speaker,,curated source,situation,emotion,theme,low,draft,note\n", encoding="utf-8")
+    meanings = tmp_path / "meanings_en.csv"
+    meanings.write_text("collection,id,plain_meaning,speaker_context,real_life_example,meaning_source\nNatrinai,1,Preferred meaning,,,meanings source\n", encoding="utf-8")
+    preferred = next(row for row in load_corpus(meanings_path=meanings, curated_path=curated) if row["poem_id"] == "NT001")
+    assert preferred["plain_meaning"] == "Preferred meaning"
+    assert preferred["confidence"] == "medium"
+    assert next(row for row in load_corpus(meanings_path=meanings, curated_path=curated) if row["poem_id"] == "NT002")["plain_meaning"] == ""
+    low_confidence = next(row for row in load_corpus(meanings_path=tmp_path / "missing_meanings.csv", curated_path=curated) if row["poem_id"] == "NT001")
+    assert low_confidence["confidence"] == "low"
+
+
+def test_api_serializes_display_only_curated_fields():
+    row = {**MEANING_DEFAULTS, "plain_meaning": "Meaning", "confidence": "high", "review_status": "reviewed"}
+    item = {"row": row, "score": 1.0, "score_type": "test", "explanation": "test", "evidence": []}
+    response = serialize(item, 1)
+    assert response["plain_meaning"] == "Meaning"
+    assert response["confidence"] == "high"
+    assert response["review_status"] == "reviewed"

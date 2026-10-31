@@ -28,7 +28,7 @@ def serialize(item: dict, rank: int) -> dict:
     row = item["row"]
     score = item["score"]
     relevance = "Weak match: limited corpus evidence; inspect the annotations and source." if item.get("weak_match") or (score < 0.10 and item.get("score_type") != "Reciprocal rank fusion score; not a probability") else "Ranked from available corpus annotations and retrieval evidence."
-    return {"rank":rank, "score":score, "score_type":item.get("score_type", "TF-IDF cosine similarity / model-specific ranking score; not a probability"), "explanation":item["explanation"], "evidence":item["evidence"], "relevance_note":relevance, "weak_match":bool(item.get("weak_match")), **{key: row.get(key, "") for key in ("collection","poem_id","poem_number","title","section","chapter_gloss_en","meaning_en","meaning_source","poem_text","akam_puram","tinai","uri","emotion","situation","characters","keywords","source","source_url","annotation_notes","annotation_status")}}
+    return {"rank":rank, "score":score, "score_type":item.get("score_type", "TF-IDF cosine similarity / model-specific ranking score; not a probability"), "explanation":item["explanation"], "evidence":item["evidence"], "relevance_note":relevance, "weak_match":bool(item.get("weak_match")), **{key: row.get(key, "") for key in ("collection","poem_id","poem_number","title","section","chapter_gloss_en","meaning_en","plain_meaning","speaker_context","real_life_example","meaning_source","confidence","review_status","curated_situation","curated_emotion","modern_theme","curation_notes","poem_text","akam_puram","tinai","uri","emotion","situation","characters","keywords","source","source_url","annotation_notes","annotation_status")}}
 
 @app.get("/api/health")
 def health():
