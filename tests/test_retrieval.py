@@ -7,7 +7,7 @@ os.environ["CLASSICAL_TAMIL_SEMANTIC_DISABLE"] = "1"
 
 from fastapi import HTTPException
 from api import RetrieveRequest, search, serialize
-from src.retrieval.core import MEANING_DEFAULTS, _mark_semantic_weak_matches, auto_results, contextual_interpretation, cultural_results, detect_emotions, detect_rule_based_emotions, interpret_query, keyword_results, load_corpus, load_curated_meanings, load_meanings, load_natrinai_corpus, metrics, retrieve, semantic_results, vector_results
+from src.retrieval.core import MEANING_DEFAULTS, _mark_semantic_weak_matches, auto_results, contextual_interpretation, cultural_results, detect_emotions, detect_rule_based_emotions, interpret_query, keyword_results, load_corpus, load_curated_meanings, load_meanings, load_natrinai_corpus, metrics, ndcg_at_k, retrieve, semantic_results, vector_results
 from src.retrieval.semantic_model import corpus_embeddings
 from src.retrieval.emotion_model import MODEL_NAME, format_pretrained_output
 
@@ -49,6 +49,7 @@ def test_cultural_routing():
 
 def test_metrics():
     assert metrics({"q1":["NT001","NT002"]}, {"q1":{"NT001"}}, 2) == {"precision_at_k":.5,"recall_at_k":1.0,"mrr":1.0,"queries":1}
+    assert ndcg_at_k({"q1":["NT001","NT002"]}, {"q1":{"NT001": 2}}, 2) == {"ndcg_at_k":1.0,"queries":1}
     assert metrics({}, {}, 5)["queries"] == 0
 
 def test_query_interpretation_is_tentative_and_never_derives_tinai_from_uri():
@@ -256,6 +257,42 @@ def test_auto_abstains_when_every_component_abstains(monkeypatch):
     results, context = retrieve([], "auto", "xylophones beneath a satellite")
     assert results == [] and any("No strong corpus match" in message for message in context)
 
+
+def test_auto_abstains_for_weak_semantic_only_neighbours(monkeypatch):
+    row = {"collection": "Thirukkural", "poem_id": "TK0001", "poem_number": "1"}
+    item = {"row": row, "score": .22, "evidence": {"semantic": ["cross-lingual similarity"]}, "explanation": "semantic", "weak_match": True}
+    monkeypatch.setattr("src.retrieval.core.keyword_results", lambda *_: [])
+    monkeypatch.setattr("src.retrieval.core.vector_results", lambda *_: [])
+    monkeypatch.setattr("src.retrieval.core.semantic_results", lambda *_: ([item], ""))
+    results, context = retrieve([row], "auto", "Xylophones resonate beneath a satellite.")
+    assert results == [] and any("No strong corpus match" in message for message in context)
+
+
+def test_auto_keeps_nonweak_semantic_result_for_differently_worded_query(monkeypatch):
+    row = {"collection": "Natrinai", "poem_id": "NT001", "poem_number": "1"}
+    item = {"row": row, "score": .72, "evidence": {"semantic": ["cross-lingual similarity"]}, "explanation": "semantic", "weak_match": False}
+    monkeypatch.setattr("src.retrieval.core.keyword_results", lambda *_: [])
+    monkeypatch.setattr("src.retrieval.core.vector_results", lambda *_: [])
+    monkeypatch.setattr("src.retrieval.core.semantic_results", lambda *_: ([item], ""))
+    monkeypatch.setattr("src.retrieval.core._mark_semantic_weak_matches", lambda items: items)
+    results, _ = retrieve([row], "auto", "I ache for a distant person.")
+    assert results and results[0]["row"]["poem_id"] == "NT001"
+
+
+@pytest.mark.parametrize(("query", "situation", "relationship"), [
+    ("I miss my old friend and wish we could reconnect.", "missing an old friend and wanting to reconnect", "friendship"),
+    ("I feel lonely even when surrounded by people.", "loneliness despite being around people", ""),
+    ("I am worried about my future.", "worry about the future", ""),
+    ("I feel left behind while everyone else moves forward.", "feeling left behind while others move forward", ""),
+    ("My friend and I are having an argument.", "friendship difficulty", "friendship"),
+    ("I am uncertain about a difficult decision.", "personal uncertainty about a difficult decision", ""),
+])
+def test_additional_human_situations_are_conservative(query, situation, relationship):
+    interpretation = interpret_query(query, load_corpus())
+    assert interpretation["situation"]["value"] == situation
+    assert interpretation["relationship"]["value"] == relationship
+    assert interpretation["tinai"]["value"] == ""
+
 def test_auto_does_not_change_direct_method_results():
     rows = load_corpus()
     before = retrieve(rows, "Vector similarity fallback", "anger")
@@ -318,6 +355,12 @@ def test_optional_curated_meanings_are_safe_and_secondary_to_meanings_file(tmp_p
     assert next(row for row in load_corpus(meanings_path=meanings, curated_path=curated) if row["poem_id"] == "NT002")["plain_meaning"] == ""
     low_confidence = next(row for row in load_corpus(meanings_path=tmp_path / "missing_meanings.csv", curated_path=curated) if row["poem_id"] == "NT001")
     assert low_confidence["confidence"] == "low"
+
+
+def test_default_curated_meanings_source_is_the_corrected_file():
+    from src.retrieval.core import CURATED_PATH
+    assert CURATED_PATH.name == "Natrinai_399_meanings_fixed.csv"
+    assert len(load_curated_meanings()) == 399
 
 
 def test_api_serializes_display_only_curated_fields():

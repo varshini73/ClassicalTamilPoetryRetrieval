@@ -63,4 +63,10 @@ def evaluation_queries():
     path = ROOT / "data" / "evaluation" / "modern_query_pilot.csv"
     with path.open(encoding="utf-8-sig", newline="") as file:
         queries = list(csv.DictReader(file))
-    return {"queries":queries, "metrics_status":"pending_human_relevance_review", "message":"All pilot queries are unreviewed; P@K, R@K and MRR are not reported as definitive."}
+    judgments_path = ROOT / "data" / "evaluation" / "human_relevance.csv"
+    judgments = []
+    if judgments_path.exists():
+        with judgments_path.open(encoding="utf-8-sig", newline="") as file:
+            judgments = [row for row in csv.DictReader(file) if (row.get("review_status") or "").strip().casefold() == "reviewed"]
+    reviewed_queries = len({row.get("query_id") for row in judgments if row.get("query_id")})
+    return {"queries":queries, "metrics_status":"ready_for_human_judgments" if not judgments else "reviewed_judgments_available", "reviewed_queries":reviewed_queries, "reviewed_judgments":len(judgments), "message":"P@K, R@K, MRR, and nDCG@K are unavailable until human relevance judgments are supplied; cultural evaluation applies only to Natrinai Akam records."}

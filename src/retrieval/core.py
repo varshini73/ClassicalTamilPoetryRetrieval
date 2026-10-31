@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 NATRINAI_CORPUS_PATH = ROOT / "data" / "corpus" / "poetry_schema.csv"
 CORPUS_PATH = ROOT / "data" / "corpus" / "combined_poetry_schema.csv"
 MEANINGS_PATH = ROOT / "data" / "corpus" / "meanings_en.csv"
-CURATED_PATH = ROOT / "data" / "corpus" / "natrinai_curated.csv"
+CURATED_PATH = ROOT / "data" / "corpus" / "Natrinai_399_meanings_fixed.csv"
+THIRUKKURAL_MEANINGS_PATH = ROOT / "data" / "corpus" / "thirukkural_meanings.csv"
 MEANING_DEFAULTS = {"meaning_en": "", "plain_meaning": "", "speaker_context": "", "real_life_example": "", "meaning_source": "", "confidence": "", "review_status": "", "curated_situation": "", "curated_emotion": "", "modern_theme": "", "curation_notes": ""}
 TINAI = ("Kurinji", "Mullai", "Marutham", "Neithal", "Palai")
 URI = ("punartal", "pirital", "iruttal", "irankal", "utal")
@@ -105,12 +106,13 @@ def load_curated_meanings(path=CURATED_PATH):
         }
 
 
-def load_corpus(path=CORPUS_PATH, meanings_path=MEANINGS_PATH, curated_path=CURATED_PATH):
+def load_corpus(path=CORPUS_PATH, meanings_path=MEANINGS_PATH, curated_path=CURATED_PATH, thirukkural_meanings_path=THIRUKKURAL_MEANINGS_PATH):
     with Path(path).open(encoding="utf-8-sig", newline="") as file:
         rows = list(csv.DictReader(file))
     if not rows or any(not row.get("collection", "").strip() for row in rows):
         raise ValueError("Expected a non-empty combined corpus with a collection column.")
     meanings = load_curated_meanings(curated_path)
+    meanings.update(load_curated_meanings(thirukkural_meanings_path))
     meanings.update(load_meanings(meanings_path))
     for row in rows:
         row.update(meanings.get(_meaning_key(row["collection"], row["poem_id"]), MEANING_DEFAULTS))
@@ -195,6 +197,14 @@ def contextual_interpretation(sentence):
         return interpretation_value("longing", "waiting/return and relationship language", "tentative")
     if "miss" in terms and friendship_language:
         return interpretation_value("longing", "missing language in a friendship context", "tentative")
+    if friendship_language and ({"reconnect", "drift", "distant", "difficulty", "difficulties", "argument"} & terms):
+        return interpretation_value("friendship concern", "explicit friendship and reconnection/difficulty language", "tentative")
+    if ({"lonely", "alone", "isolated"} & terms) and ({"people", "surrounded", "everyone"} & terms):
+        return interpretation_value("social loneliness", "loneliness despite social-presence language", "tentative")
+    if ({"worried", "anxious", "uncertain"} & terms) and ({"future", "decision", "choice", "choices"} & terms):
+        return interpretation_value("uncertainty", "future or decision concern language", "tentative")
+    if "left behind" in text or ({"behind", "forward"} <= terms):
+        return interpretation_value("feeling left behind", "explicit comparison/progress language", "tentative")
     if any(phrase in text for phrase in ("don't know", "do not know", "not sure", "uncertain", "unsure")):
         return interpretation_value("uncertainty", "explicit uncertainty language", "tentative")
     if ({"conflict", "quarrel", "troubled", "misunderstood", "misunderstanding", "betrayal", "estrangement"} & terms) and relationship_language:
@@ -205,6 +215,20 @@ def understand_situation(sentence):
     """Identify actions/events independently of detected emotion."""
     sentence = ensure_single_situation(sentence)
     terms, text = set(normalize(sentence)), sentence.casefold()
+    if "miss" in terms and "friend" in terms and ("reconnect" in terms or "old friend" in text):
+        return interpretation_value("missing an old friend and wanting to reconnect", "missing, friendship, and reconnection language", "tentative")
+    if ({"lonely", "alone", "isolated"} & terms) and ({"people", "surrounded", "everyone"} & terms):
+        return interpretation_value("loneliness despite being around people", "loneliness plus social-presence language", "tentative")
+    if ({"worried", "anxious", "uncertain"} & terms) and "future" in terms:
+        return interpretation_value("worry about the future", "worry/anxiety and future language", "tentative")
+    if "left behind" in text or ({"behind", "forward"} <= terms):
+        return interpretation_value("feeling left behind while others move forward", "explicit comparison/progress language", "tentative")
+    if "friend" in terms and ({"conflict", "argument", "troubled", "difficult", "difficulty"} & terms):
+        return interpretation_value("friendship difficulty", "friendship and difficulty/conflict language", "tentative")
+    if ({"family", "parent", "mother", "father", "child", "children"} & terms) and ({"worried", "worry", "concern", "concerned", "difficult", "difficulty"} & terms):
+        return interpretation_value("family-related concern", "family and concern language", "tentative")
+    if ({"decision", "decide", "choice", "choices"} & terms) and ({"uncertain", "unsure", "difficult", "hard"} & terms):
+        return interpretation_value("personal uncertainty about a difficult decision", "decision and uncertainty language", "tentative")
     if ({"waiting", "wait", "return"} & terms) and ({"love", "loved", "lover", "someone"} & terms or "someone" in text):
         return interpretation_value("waiting for a loved one's return", "waiting/return and relationship language", "tentative")
     if ({"afraid", "scared", "fear", "worried", "lose"} & terms) and ({"journey", "separation", "separated", "departure", "leave"} & terms):
@@ -421,6 +445,11 @@ def auto_results(rows, query):
         unavailable_methods.append("Semantic unavailable")
     if not components:
         return [], [], unavailable_methods
+    # A semantic rank alone is not evidence of relevance.  It may be a dense
+    # vector-space nearest neighbour for unrelated text; retain semantic-only
+    # Auto results only when the existing spread check did not flag them weak.
+    if len(components) == 1 and components[0][0] == "semantic" and all(item.get("weak_match") for item in components[0][1]):
+        return [], [], unavailable_methods
 
     fused = {}
     for method, results in components:
@@ -488,3 +517,17 @@ def metrics(rankings, judgments, k=5):
         hits = [i for i, pid in enumerate(rankings[qid][:k], 1) if pid in relevant]
         p += len(hits)/k; r += len(hits)/len(relevant); m += 1/hits[0] if hits else 0
     n=len(eligible); return {"precision_at_k":p/n,"recall_at_k":r/n,"mrr":m/n,"queries":n}
+
+
+def ndcg_at_k(rankings, graded_judgments, k=5):
+    """Calculate nDCG only from explicit human graded judgments."""
+    eligible = [(qid, grades) for qid, grades in graded_judgments.items() if grades and qid in rankings]
+    if not eligible:
+        return {"ndcg_at_k": math.nan, "queries": 0}
+    total = 0.0
+    for qid, grades in eligible:
+        actual = sum((2 ** grades.get(pid, 0) - 1) / math.log2(rank + 1) for rank, pid in enumerate(rankings[qid][:k], 1))
+        ideal = sorted(grades.values(), reverse=True)[:k]
+        ideal_score = sum((2 ** grade - 1) / math.log2(rank + 1) for rank, grade in enumerate(ideal, 1))
+        total += actual / ideal_score if ideal_score else 0.0
+    return {"ndcg_at_k": total / len(eligible), "queries": len(eligible)}
